@@ -9,52 +9,115 @@ def _pdf_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
+def _wrap_text(text: str, width: int) -> list[str]:
+    """Simple word wrap."""
+    words = (text or "").split()
+    if not words:
+        return [""]
+    lines = []
+    line = words[0]
+    for w in words[1:]:
+        if len(line) + 1 + len(w) <= width:
+            line += " " + w
+        else:
+            lines.append(line)
+            line = w
+    lines.append(line)
+    return lines
+
+
 def build_pdf_report(title: str, rows: List[Dict]) -> bytes:
     """
     Pure-Python PDF generator (no external dependencies).
-    Renders a simple text report with columns:
-      Date | Start Miles | End Miles | Start Time | End Time | Notes
+    Produces a readable fixed-width report with wrapped notes.
+    Expected keys per row:
+      date, start_miles, end_miles, start_time, end_time, notes
     """
-    # Page setup (US Letter, points)
-    page_w, page_h = 612, 792  # 8.5x11
+
+    # Letter in points
+    page_w, page_h = 612, 792
     left = 40
-    top = page_h - 50
+    top = page_h - 60
+    bottom = 55
+
+    # Fonts
+    # We'll use built-in PDF base fonts: Helvetica + Courier
+    title_font = "Helvetica-Bold"
+    header_font = "Helvetica-Bold"
+    body_font = "Courier"  # mono font for aligned columns
+
+    title_size = 16
+    header_size = 11
+    body_size = 10
+
+    # Line spacing
     line_h = 14
 
-    def make_lines() -> list[str]:
-        lines = []
-        lines.append(title)
-        lines.append("")
-        header = "Date        Start   End     Start Time   End Time     Notes"
-        lines.append(header)
-        lines.append("-" * len(header))
+    # Column widths (characters) for mono body font
+    # Tune these if you want wider Notes, etc.
+    COL_DATE = 10
+    COL_MILES = 10  # fits 76000.00
+    COL_TIME = 9    # fits "8:00 AM"
+    COL_NOTES = 40  # wrap notes
 
-        for r in rows:
-            d = str(r.get("date", ""))
-            sm = f"{float(r.get('start_miles', 0.0)):.2f}"
-            em = f"{float(r.get('end_miles', 0.0)):.2f}"
-            st = str(r.get("start_time", ""))
-            et = str(r.get("end_time", ""))
-            notes = (r.get("notes") or "").strip()
+    def fmt_row(r: Dict) -> tuple[str, list[str]]:
+        d = str(r.get("date", ""))[:COL_DATE]
+        sm = f"{float(r.get('start_miles', 0.0)):.2f}"
+        em = f"{float(r.get('end_miles', 0.0)):.2f}"
+        st = str(r.get("start_time", ""))
+        et = str(r.get("end_time", ""))
 
-            # keep notes sane length so a text line doesn't explode
-            if len(notes) > 50:
-                notes = notes[:47] + "..."
+        # pad/trim to fixed widths
+        base = (
+            f"{d:<{COL_DATE}}  "
+            f"{sm:>{COL_MILES}}  "
+            f"{em:>{COL_MILES}}  "
+            f"{st:<{COL_TIME}}  "
+            f"{et:<{COL_TIME}}  "
+        )
 
-            # fixed-ish spacing
-            line = f"{d:<10}  {sm:>6}  {em:>6}  {st:<10}  {et:<10}  {notes}"
-            lines.append(line)
+        notes = (r.get("notes") or "").strip()
+        wrapped_notes = _wrap_text(notes, COL_NOTES)
+        return base, wrapped_notes
 
-        return lines
+    # Build printable "logical lines" including wrapping notes
+    logical_lines: list[tuple[str, str]] = []  # (kind, text) kind: title/header/body/divider
 
-    lines = make_lines()
+    logical_lines.append(("title", title))
+    logical_lines.append(("spacer", ""))
 
-    # paginate
-    max_lines_per_page = int((top - 60) // line_h)  # bottom margin ~60
-    pages = [lines[i:i + max_lines_per_page] for i in range(0, len(lines), max_lines_per_page)]
+    # Header (looks good even if body is mono)
+    header = (
+        f"{'Date':<{COL_DATE}}  "
+        f"{'Start':>{COL_MILES}}  "
+        f"{'End':>{COL_MILES}}  "
+        f"{'Start':<{COL_TIME}}  "
+        f"{'End':<{COL_TIME}}  "
+        f"{'Notes'}"
+    )
+    logical_lines.append(("header", header))
+    logical_lines.append(("divider", "-" * (COL_DATE + 2 + COL_MILES + 2 + COL_MILES + 2 + COL_TIME + 2 + COL_TIME + 2 + COL_NOTES)))
 
-    # Build a minimal PDF with one font (Helvetica) and text streams.
-    # This is a simple, valid PDF structure.
+    for r in rows:
+        base, notes_lines = fmt_row(r)
+        # first line includes first chunk of notes
+        first_notes = notes_lines[0] if notes_lines else ""
+        logical_lines.append(("body", base + first_notes))
+
+        # additional wrapped notes lines (indent under notes area)
+        for extra in notes_lines[1:]:
+            indent = " " * (COL_DATE + 2 + COL_MILES + 2 + COL_MILES + 2 + COL_TIME + 2 + COL_TIME + 2)
+            logical_lines.append(("body", indent + extra))
+
+        # divider between records for readability
+        logical_lines.append(("spacer", ""))
+
+    # Pagination: estimate how many lines fit
+    usable_h = top - bottom
+    max_lines_per_page = int(usable_h // line_h)
+    pages = [logical_lines[i:i + max_lines_per_page] for i in range(0, len(logical_lines), max_lines_per_page)]
+
+    # ---- Minimal PDF building ----
     out = BytesIO()
     objects: list[bytes] = []
     offsets: list[int] = []
@@ -63,90 +126,88 @@ def build_pdf_report(title: str, rows: List[Dict]) -> bytes:
         objects.append(data)
         return len(objects)
 
-    # 1) Catalog
-    # 2) Pages
-    # 3..n) Page(s)
-    # font object
-    font_obj_num = add_obj(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    # Font objects
+    font_title = add_obj(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>")
+    font_header = add_obj(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>")
+    font_body = add_obj(b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>")
 
-    page_obj_nums = []
-
-    # Create each page content stream
+    # Build content streams for each page
     content_obj_nums = []
-    for page_index, page_lines in enumerate(pages):
-        # Build text content stream
+    for page in pages:
         y = top
-        stream_lines = ["BT", "/F1 11 Tf", f"{left} {y} Td"]
-        first = True
-        for ln in page_lines:
-            if not first:
-                stream_lines.append(f"0 -{line_h} Td")
-            first = False
-            stream_lines.append(f"({_pdf_escape(ln)}) Tj")
-        stream_lines.append("ET")
-        stream = "\n".join(stream_lines).encode("latin-1", "ignore")
+
+        # Start text
+        parts = ["BT"]
+        parts.append(f"{left} {y} Td")
+
+        for kind, text in page:
+            if kind == "title":
+                parts.append(f"/F1 {title_size} Tf")
+            elif kind == "header":
+                parts.append(f"/F2 {header_size} Tf")
+            elif kind in ("body", "divider"):
+                parts.append(f"/F3 {body_size} Tf")
+            else:  # spacer
+                parts.append(f"/F3 {body_size} Tf")
+
+            parts.append(f"({_pdf_escape(text)}) Tj")
+            parts.append(f"0 -{line_h} Td")
+            y -= line_h
+
+        parts.append("ET")
+        stream = "\n".join(parts).encode("latin-1", "ignore")
 
         content = b"<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream)
         content_obj_nums.append(add_obj(content))
 
-    # Build Pages object after pages are made
-    # Placeholder; we’ll fill kids list after creating page objects.
-    # We'll create page objects now.
-    for i, content_num in enumerate(content_obj_nums):
+    # Page objects (we'll rebuild to fix references)
+    page_obj_nums = []
+    for content_num in content_obj_nums:
         page = (
             b"<< /Type /Page /Parent 2 0 R "
             b"/MediaBox [0 0 612 792] "
-            b"/Resources << /Font << /F1 %d 0 R >> >> "
+            b"/Resources << /Font << /F1 %d 0 R /F2 %d 0 R /F3 %d 0 R >> >> "
             b"/Contents %d 0 R >>"
-        ) % (font_obj_num, content_num)
+        ) % (font_title, font_header, font_body, content_num)
         page_obj_nums.append(add_obj(page))
 
-    kids = " ".join([f"{n} 0 R" for n in page_obj_nums]).encode("ascii")
-    pages_obj = b"<< /Type /Pages /Kids [ %s ] /Count %d >>" % (kids, len(page_obj_nums))
-
-    # Insert Pages object as object #2 (we haven't created Catalog yet)
-    # We'll rebuild objects list in correct order:
-    # obj 1: Catalog, obj 2: Pages, others...
-    # We already added font + content + pages; easiest is rebuild in a new list.
-
-    # Rebuild:
+    # Now rebuild objects so Catalog=1 and Pages=2 (clean)
     old_objects = objects[:]
     objects = []
     offsets = []
 
-    # Object 1: Catalog (references Pages 2)
+    # Catalog
     add_obj(b"<< /Type /Catalog /Pages 2 0 R >>")
-    # Object 2: Pages
-    add_obj(pages_obj)
-    # Object 3: Font (was font_obj_num in old list; now it's 3)
-    add_obj(old_objects[font_obj_num - 1])
 
-    # Now add all content streams and pages, but we must fix references:
-    # Font reference becomes 3 0 R
+    # Pages placeholder (we'll set kids after page objects are re-added)
+    add_obj(b"<< /Type /Pages /Kids [] /Count 0 >>")
+
+    # Re-add fonts as objects 3,4,5
+    add_obj(old_objects[font_title - 1])
+    add_obj(old_objects[font_header - 1])
+    add_obj(old_objects[font_body - 1])
+
+    # Re-add content streams
     new_content_nums = []
-    new_page_nums = []
-
-    # Add content streams
     old_content_objs = [old_objects[n - 1] for n in content_obj_nums]
     for co in old_content_objs:
         new_content_nums.append(add_obj(co))
 
-    # Add page objects with corrected references
+    # Re-add pages with corrected font refs (3/4/5) and content refs
+    new_page_nums = []
     for idx in range(len(pages)):
-        # Page references:
-        # Parent = 2, Font = 3, Contents = new_content_nums[idx]
         page = (
             b"<< /Type /Page /Parent 2 0 R "
             b"/MediaBox [0 0 612 792] "
-            b"/Resources << /Font << /F1 3 0 R >> >> "
+            b"/Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> "
             b"/Contents %d 0 R >>"
         ) % (new_content_nums[idx])
         new_page_nums.append(add_obj(page))
 
-    # Now we must update Pages object (obj 2) kids to the new page object nums
-    kids2 = " ".join([f"{n} 0 R" for n in new_page_nums]).encode("ascii")
-    pages_obj2 = b"<< /Type /Pages /Kids [ %s ] /Count %d >>" % (kids2, len(new_page_nums))
-    objects[1] = pages_obj2  # replace object #2
+    # Update Pages object (obj 2)
+    kids = " ".join([f"{n} 0 R" for n in new_page_nums]).encode("ascii")
+    pages_obj = b"<< /Type /Pages /Kids [ %s ] /Count %d >>" % (kids, len(new_page_nums))
+    objects[1] = pages_obj
 
     # Write PDF
     out.write(b"%PDF-1.4\n")
@@ -170,3 +231,4 @@ def build_pdf_report(title: str, rows: List[Dict]) -> bytes:
     out.write(b"%%EOF\n")
 
     return out.getvalue()
+
