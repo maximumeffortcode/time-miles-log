@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from db import init_db, insert_log, fetch_logs, delete_log
-from pdf_report import build_pdf_report
+
 
 st.set_page_config(page_title="Time & Miles Log", layout="centered")
 init_db()
@@ -222,16 +222,16 @@ c3.metric("Avg Pace (min/mi)", f"{avg_pace_min}")
 # -----------------------
 # -----------------------
 # -----------------------
-# PDF Export (with quick dropdown + date selector)
+# -----------------------
+# CSV Export (primary)
 # -----------------------
 st.divider()
-st.subheader("Export PDF")
+st.subheader("Export CSV")
 
 all_min_d = df["date"].min()
 all_max_d = df["date"].max()
 today = date.today()
 
-# Quick range options
 quick = st.selectbox(
     "Quick range",
     [
@@ -240,114 +240,85 @@ quick = st.selectbox(
         "Yesterday",
         "Last 7 days",
         "Last 14 days",
-        "This week (Mon–Sun)",
-        "Last week (Mon–Sun)",
+        "This week",
+        "Last week",
         "This month",
         "Last month",
         "All time",
     ],
     index=0,
-    key="pdf_quick_range",
+    key="csv_quick_range",
 )
 
-def clamp(d: date) -> date:
-    if d < all_min_d:
-        return all_min_d
-    if d > all_max_d:
-        return all_max_d
-    return d
-
-def week_start(d: date) -> date:
-    # Monday as start of week
+def week_start(d):
     return d - timedelta(days=d.weekday())
 
-def month_start(d: date) -> date:
-    return d.replace(day=1)
-
-def last_month_range(d: date) -> tuple[date, date]:
+def last_month_range(d):
     first_this_month = d.replace(day=1)
     last_prev_month = first_this_month - timedelta(days=1)
-    first_prev_month = last_prev_month.replace(day=1)
-    return first_prev_month, last_prev_month
+    return last_prev_month.replace(day=1), last_prev_month
 
-# Determine default start/end based on quick selection
 if quick == "Today":
-    default_start, default_end = today, today
+    default_start = default_end = today
 elif quick == "Yesterday":
-    y = today - timedelta(days=1)
-    default_start, default_end = y, y
+    d = today - timedelta(days=1)
+    default_start = default_end = d
 elif quick == "Last 7 days":
     default_start, default_end = today - timedelta(days=6), today
 elif quick == "Last 14 days":
     default_start, default_end = today - timedelta(days=13), today
-elif quick == "This week (Mon–Sun)":
+elif quick == "This week":
     ws = week_start(today)
-    default_start, default_end = ws, ws + timedelta(days=6)
-elif quick == "Last week (Mon–Sun)":
+    default_start, default_end = ws, today
+elif quick == "Last week":
     ws = week_start(today) - timedelta(days=7)
     default_start, default_end = ws, ws + timedelta(days=6)
 elif quick == "This month":
-    ms = month_start(today)
-    # end = today (more useful than end-of-month for "so far")
-    default_start, default_end = ms, today
+    default_start, default_end = today.replace(day=1), today
 elif quick == "Last month":
     default_start, default_end = last_month_range(today)
-elif quick == "All time":
-    default_start, default_end = all_min_d, all_max_d
-else:  # Custom
+else:  # Custom / All time
     default_start, default_end = all_min_d, all_max_d
 
-# Clamp to data range so date_input doesn't complain
-default_start = clamp(default_start)
-default_end = clamp(default_end)
-if default_end < default_start:
-    default_end = default_start
-
-pdf_start_date, pdf_end_date = st.date_input(
-    "PDF date range",
+csv_start, csv_end = st.date_input(
+    "CSV date range",
     value=(default_start, default_end),
     min_value=all_min_d,
     max_value=all_max_d,
-    key="pdf_date_range",
+    key="csv_date_range",
 )
 
-report_title = st.text_input(
-    "Report title",
-    value=f"Time & Miles Report ({pdf_start_date} to {pdf_end_date})",
-    key="pdf_title",
+csv_df = df[
+    (df["date"] >= csv_start) & (df["date"] <= csv_end)
+][
+    [
+        "date",
+        "start_miles",
+        "end_miles",
+        "start_time_display",
+        "end_time_display",
+        "notes",
+    ]
+].rename(
+    columns={
+        "date": "Date",
+        "start_miles": "Start Miles",
+        "end_miles": "End Miles",
+        "start_time_display": "Start Time",
+        "end_time_display": "End Time",
+        "notes": "Notes",
+    }
 )
 
-pdf_filtered = df[(df["date"] >= pdf_start_date) & (df["date"] <= pdf_end_date)].copy()
+csv_bytes = csv_df.to_csv(index=False).encode("utf-8")
+csv_filename = f"time_miles_{csv_start}_to_{csv_end}.csv"
 
-if pdf_filtered.empty:
-    st.warning("No logs found in that PDF date range.")
-else:
-    pdf_rows = []
-    for _, r in pdf_filtered.iterrows():
-        pdf_rows.append(
-            {
-                "date": str(r["date"]),
-                "start_miles": float(r["start_miles"]),
-                "end_miles": float(r["end_miles"]),
-                "start_time": r["start_time_display"],  # 12-hour display
-                "end_time": r["end_time_display"],      # 12-hour display
-                "notes": r["notes"] or "",
-            }
-        )
-
-    pdf_bytes = build_pdf_report(
-        title=report_title,
-        rows=pdf_rows,
-    )
-
-    filename = f"time_miles_report_{pdf_start_date}_to_{pdf_end_date}.pdf"
-    st.download_button(
-        "⬇️ Download PDF",
-        data=pdf_bytes,
-        file_name=filename,
-        mime="application/pdf",
-    )
-
+st.download_button(
+    "⬇️ Download CSV",
+    data=csv_bytes,
+    file_name=csv_filename,
+    mime="text/csv",
+)
 
 # -----------------------
 # Delete log
