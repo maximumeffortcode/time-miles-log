@@ -5,7 +5,7 @@ from datetime import date, datetime, time, timedelta
 import pandas as pd
 import streamlit as st
 
-from db import init_db, insert_log, fetch_logs, delete_log
+from db import init_db, insert_start_log, complete_log, fetch_open_logs, fetch_completed_logs, delete_log
 
 
 st.set_page_config(page_title="Time & Miles Log", layout="centered")
@@ -88,22 +88,98 @@ if not require_login():
 
 st.title("⏱️ Time & Miles Log")
 
+st.header("Start / Finish a Log")
+
 # -----------------------
-# Add Log Form
+# START LOG (beginning of day)
 # -----------------------
-with st.form("log_form", clear_on_submit=True):
-    log_date = st.date_input("Date", value=date.today())
+with st.form("start_log_form", clear_on_submit=True):
+    st.subheader("Start Log (beginning of day)")
+    log_date = st.date_input("Date", value=date.today(), key="start_date")
 
     c1, c2 = st.columns(2)
     with c1:
-        start_miles_raw = st.text_input("Start Miles", placeholder="e.g. 1234.5")
-        start_time_val = st.time_input("Start Time")  # UI may show 24h depending on system/locale
+        start_miles_raw = st.text_input("Start Miles", placeholder="e.g. 76000", key="start_miles")
     with c2:
-        end_miles_raw = st.text_input("End Miles", placeholder="e.g. 1240.2")
-        end_time_val = st.time_input("End Time")
+        start_time_val = st.time_input("Start Time", key="start_time")
 
-    notes = st.text_input("Notes (optional)")
-    submitted = st.form_submit_button("Add log")
+    notes = st.text_input("Notes (optional)", key="start_notes")
+    start_submit = st.form_submit_button("Start log")
+
+    if start_submit:
+        try:
+            start_miles = float(start_miles_raw)
+        except ValueError:
+            st.error("Start Miles must be a number.")
+            st.stop()
+
+        if start_miles < 0:
+            st.error("Miles cannot be negative.")
+            st.stop()
+
+        insert_start_log(
+            date_str=str(log_date),
+            start_miles=start_miles,
+            start_time=start_time_val.strftime("%H:%M"),
+            notes=notes.strip(),
+        )
+        st.success("Started log! Come back later to finish it.")
+
+
+# -----------------------
+# FINISH LOG (end of day)
+# -----------------------
+open_rows = fetch_open_logs()
+
+st.subheader("Finish Log (end of day)")
+
+if not open_rows:
+    st.info("No open logs right now. Start a log above.")
+else:
+    # build a friendly dropdown label
+    options = {
+        r[0]: f"ID {r[0]} — {r[1]} — start {r[4]} — {r[2]:.2f} mi"
+        for r in open_rows
+    }
+    selected_id = st.selectbox(
+        "Choose an open log to finish",
+        options=list(options.keys()),
+        format_func=lambda k: options[k],
+    )
+
+    with st.form("finish_log_form", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            end_miles_raw = st.text_input("End Miles", placeholder="e.g. 76225", key="end_miles")
+        with c2:
+            end_time_val = st.time_input("End Time", key="end_time")
+
+        finish_submit = st.form_submit_button("Finish log")
+
+        if finish_submit:
+            try:
+                end_miles = float(end_miles_raw)
+            except ValueError:
+                st.error("End Miles must be a number.")
+                st.stop()
+
+            if end_miles < 0:
+                st.error("Miles cannot be negative.")
+                st.stop()
+
+            # Validate end_miles > start_miles for the selected open log
+            start_miles_for_selected = [r[2] for r in open_rows if r[0] == selected_id][0]
+            if end_miles <= float(start_miles_for_selected):
+                st.error("End Miles must be greater than Start Miles for this log.")
+                st.stop()
+
+            complete_log(
+                log_id=int(selected_id),
+                end_miles=end_miles,
+                end_time=end_time_val.strftime("%H:%M"),
+            )
+            st.success("Log finished!")
+            st.rerun()
 
     if submitted:
         start_miles = safe_float(start_miles_raw)
@@ -134,7 +210,7 @@ with st.form("log_form", clear_on_submit=True):
 # -----------------------
 # Load logs
 # -----------------------
-rows = fetch_logs()
+rows = fetch_completed_logs()
 if not rows:
     st.info("No logs yet. Add your first entry above.")
     st.stop()
