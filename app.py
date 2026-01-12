@@ -181,32 +181,6 @@ else:
             st.success("Log finished!")
             st.rerun()
 
-    if submitted:
-        start_miles = safe_float(start_miles_raw)
-        end_miles = safe_float(end_miles_raw)
-
-        if start_miles is None or end_miles is None:
-            st.error("Start Miles and End Miles must be valid numbers (example: 1234.5).")
-            st.stop()
-
-        if start_miles < 0 or end_miles < 0:
-            st.error("Miles cannot be negative.")
-            st.stop()
-
-        if end_miles <= start_miles:
-            st.error("End Miles must be greater than Start Miles.")
-            st.stop()
-
-        insert_log(
-            str(log_date),
-            float(start_miles),
-            float(end_miles),
-            start_time_val.strftime("%H:%M"),  # store as HH:MM
-            end_time_val.strftime("%H:%M"),
-            notes.strip(),
-        )
-        st.success("Log saved!")
-
 # -----------------------
 # Load logs
 # -----------------------
